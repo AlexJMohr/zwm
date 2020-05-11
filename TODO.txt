@@ -1,0 +1,6 @@
+TODO
+- XGrabKey, XGrabButton in WindowManager.frameWindow()
+- Config file
+    - Keybindings
+    - Window decorations
+
