@@ -1,5 +1,7 @@
 TODO
-- XGrabKey, XGrabButton in WindowManager.frameWindow()
+- XGrabKey
+    - alt+F4 to kill should be more graceful
+- XGrabButton (mouse buttons)
 - Config file
     - Keybindings
     - Window decorations
