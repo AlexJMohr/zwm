@@ -7,26 +7,15 @@ var wm_detected = false;
 
 pub const WindowManagerError = error{OtherWindowManagerDetected};
 
-var clients = std.HashMap(c.Window, c.Window, windowHash, windowEql).init(std.heap.c_allocator);
-
-/// HashMap hash fn for X Window (which are c_ulong)
-fn windowHash(w: c.Window) u32 {
-    // TODO: this should probably be improved
-    return @truncate(u32, w);
-}
-
-/// HashMap eql fn for X Windows (which are c_ulong)
-fn windowEql(w1: c.Window, w2: c.Window) bool {
-    return w1 == w1;
-}
-
 pub const WindowManager = struct {
     const Self = @This();
+    const WindowHashMap = std.AutoHashMap(c.Window, c.Window);
 
     display: *c.Display,
     root_window: c.Window,
     /// Map client window to our frame window around said client.
-    // clients: std.hash_map.HashMap(c.Window, c.Window, windowHash, windowEql),
+    clients: WindowHashMap,
+
     /// Open the X Display and get root window
     pub fn init() Self {
         // Open X Display
@@ -40,28 +29,14 @@ pub const WindowManager = struct {
             @intCast(usize, c.DefaultScreen(display)),
         ).*.root;
 
-        // create HashMap for client window -> frame
-        // const clients_hash_map = std.HashMap(c.Window, c.Window, windowHash, windowEql);
-
         return Self{
             .display = display,
             .root_window = root_window,
-            // .clients = clients,
+            .clients = WindowHashMap.init(std.heap.c_allocator),
         };
     }
 
-    // /// HashMap hash fn for X Window (which are c_ulong)
-    // fn windowHash(w: c.Window) u32 {
-    //     // TODO: this should probably be improved
-    //     return @truncate(u32, w);
-    // }
-
-    // /// HashMap eql fn for X Windows (which are c_ulong)
-    // fn windowEql(w1: c.Window, w2: c.Window) bool {
-    //     return w1 == w1;
-    // }
-
-    pub fn run(self: Self) WindowManagerError!void {
+    pub fn run(self: *Self) !void {
         // Detect other running window manager by attempting to set SubstructureRedirectMask
         _ = c.XSetErrorHandler(onWMDetected);
         _ = c.XSelectInput(
@@ -79,11 +54,11 @@ pub const WindowManager = struct {
         _ = c.XSetErrorHandler(onXError);
 
         // Start the main event loop
-        var e: c.XEvent = undefined;
         while (true) {
+            var e: c.XEvent = undefined;
             _ = c.XNextEvent(self.display, &e);
 
-            switch (e.type) {
+            try switch (e.type) {
                 c.CreateNotify => self.onCreateNotify(e.xcreatewindow),
                 c.ConfigureRequest => self.onConfigureRequest(e.xconfigurerequest),
                 c.MapRequest => self.onMapRequest(e.xmaprequest),
@@ -91,23 +66,22 @@ pub const WindowManager = struct {
                 c.MapNotify => self.onMapNotify(e.xmap),
                 c.UnmapNotify => self.onUnmapNotify(e.xunmap),
                 else => {},
-            }
+            };
         }
     }
 
-    pub fn deinit(self: Self) void {
-        clients.deinit();
+    pub fn deinit(self: *Self) void {
+        self.clients.deinit();
         _ = c.XCloseDisplay(self.display);
     }
 
-    /// Triggered by client application calling XCreateWindow. Newly created
-    /// windows are always invisible so there is nothing to do here.
-    fn onCreateNotify(self: Self, e: c.XCreateWindowEvent) void {}
+    /// Triggered by client application calling XCreateWindow. Newly created windows are always
+    /// invisible so there is nothing to do here.
+    fn onCreateNotify(self: *Self, e: c.XCreateWindowEvent) void {}
 
-    /// Triggered by client application calling XConfigureWindow. The client window
-    /// is still invisible at this point, so the request can just be forwarded
-    /// without modification.
-    fn onConfigureRequest(self: Self, e: c.XConfigureRequestEvent) void {
+    /// Triggered by client application calling XConfigureWindow. The client window is still
+    /// invisible at this point, so the request can just be forwarded without modification
+    fn onConfigureRequest(self: *Self, e: c.XConfigureRequestEvent) void {
         var changes = c.XWindowChanges{
             .x = e.x,
             .y = e.y,
@@ -117,9 +91,8 @@ pub const WindowManager = struct {
             .sibling = e.above,
             .stack_mode = e.detail,
         };
-
         // Also need to configure the frame window
-        if (clients.getValue(e.window)) |frame| {
+        if (self.clients.getValue(e.window)) |frame| {
             _ = c.XConfigureWindow(
                 self.display,
                 frame,
@@ -127,7 +100,7 @@ pub const WindowManager = struct {
                 &changes,
             );
         }
-
+        // Pass on the configure request for the client window
         _ = c.XConfigureWindow(
             self.display,
             e.window,
@@ -137,28 +110,28 @@ pub const WindowManager = struct {
     }
 
     /// Triggered by XMapWindow
-    fn onMapRequest(self: Self, e: c.XMapRequestEvent) void {
+    fn onMapRequest(self: *Self, e: c.XMapRequestEvent) !void {
         // Frame the window
-        self.frameWindow(e.window);
+        try self.frameWindow(e.window);
         // Actually map the window
         _ = c.XMapWindow(self.display, e.window);
     }
 
     /// Triggered by us reparenting client windows with XReparentWindow. Nothing to do here.
-    fn onReparentNotify(self: Self, e: c.XReparentEvent) void {}
+    fn onReparentNotify(self: *Self, e: c.XReparentEvent) void {}
 
     /// Triggered by us mapping frame windows with XMapWindow. Nothing to do here.
-    fn onMapNotify(self: Self, e: c.XMapEvent) void {}
+    fn onMapNotify(self: *Self, e: c.XMapEvent) void {}
 
-    /// Triggered by a client calling XUnmapWindow. We need to unframe it.
-    fn onUnmapNotify(self: Self, e: c.XUnmapEvent) void {
-        if (clients.get(e.window)) |frame| {
+    /// Triggered by a client calling XUnmapWindow. We need to unframe the client's window.
+    fn onUnmapNotify(self: *Self, e: c.XUnmapEvent) void {
+        if (self.clients.get(e.window)) |frame| {
             self.unFrameWindow(e.window);
         }
     }
 
     /// Reparent window to a frame (another window) so we can draw a border and decorations.
-    fn frameWindow(self: Self, w: c.Window) void {
+    fn frameWindow(self: *Self, w: c.Window) !void {
         const border_width = 3;
         const border_color = 0xff0000;
         const bg_color = 0x0000ff;
@@ -168,7 +141,7 @@ pub const WindowManager = struct {
         _ = c.XGetWindowAttributes(self.display, w, &attrs);
 
         // check if frame already exists
-        if (!clients.contains(w)) {
+        if (!self.clients.contains(w)) {
             // Create frame
             const frame = c.XCreateSimpleWindow(
                 self.display,
@@ -200,14 +173,14 @@ pub const WindowManager = struct {
             // Map the frame
             _ = c.XMapWindow(self.display, frame);
             // Save frame handle
-            _ = clients.put(w, frame) catch unreachable;
+            _ = try self.clients.put(w, frame);
             // TODO: grab keys and buttons for w here
         }
     }
 
-    fn unFrameWindow(self: Self, w: c.Window) void {
-        // We reverse the steps taken in frameWindow().
-        if (clients.getValue(w)) |frame| {
+    /// Reverse the steps taken in frameWindow.
+    fn unFrameWindow(self: *Self, w: c.Window) void {
+        if (self.clients.getValue(w)) |frame| {
             _ = c.XUnmapWindow(self.display, frame);
             _ = c.XReparentWindow(
                 self.display,
@@ -218,14 +191,13 @@ pub const WindowManager = struct {
             );
             _ = c.XRemoveFromSaveSet(self.display, w);
             _ = c.XDestroyWindow(self.display, frame);
-            _ = clients.remove(w);
+            _ = self.clients.remove(w);
         }
     }
 
-    /// Xlib error handler used to determine whether another window manager is
-    /// running. It is set as the error handler right before selecting substructure
-    /// redirection mask on the root window, so it is invoked if and only if
-    /// another window manager is running.
+    /// Xlib error handler used to determine whether another window manager is running. It is set
+    /// as the error handler right before selecting substructure redirection mask on the root
+    /// window, so it is invoked if and only if another window manager is running.
     fn onWMDetected(display: ?*c.Display, e: [*c]c.XErrorEvent) callconv(.C) c_int {
         wm_detected = e.*.error_code == c.BadAccess;
         return 0;
