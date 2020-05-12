@@ -7,7 +7,6 @@ pub fn build(b: *Builder) void {
 
     exe.setBuildMode(mode);
     exe.setTarget(target);
-    // exe.linkSystemLibrary("xcb");
     exe.linkSystemLibrary("X11");
     exe.linkLibC();
     exe.install();

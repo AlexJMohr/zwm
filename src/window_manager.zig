@@ -65,6 +65,8 @@ pub const WindowManager = struct {
                 c.ReparentNotify => self.onReparentNotify(e.xreparent),
                 c.MapNotify => self.onMapNotify(e.xmap),
                 c.UnmapNotify => self.onUnmapNotify(e.xunmap),
+                c.KeyPress => self.onKeyPress(e.xkey),
+                c.KeyRelease => self.onKeyRelease(e.xkey),
                 else => {},
             };
         }
@@ -130,6 +132,55 @@ pub const WindowManager = struct {
         }
     }
 
+    /// Triggered by keypress if the key + modifiers were grabbed with XGrabKey on the window
+    fn onKeyPress(self: *Self, e: c.XKeyEvent) void {
+        // TODO: should also exclude other modifiers, not just check for Mod1Mask.
+        // alt+F4: close window
+        if (e.state & (c.Mod1Mask) != 0 and e.keycode == c.XKeysymToKeycode(self.display, c.XK_F4)) {
+            // Check if the window allows us to kill it nicely
+            var supported_protocols: [*c]c.Atom = undefined;
+            var num_supported_protocols: c_int = 0;
+            _ = c.XGetWMProtocols(
+                self.display,
+                e.window,
+                &supported_protocols,
+                &num_supported_protocols,
+            );
+            var graceful = false;
+            const wm_delete_window = c.XInternAtom(self.display, "WM_DELETE_WINDOW", 0);
+            const wm_protocols = c.XInternAtom(self.display, "WM_PROTOCOLS", 0);
+            var i: usize = 0;
+            while (i < num_supported_protocols) : (i += 1) {
+                if (supported_protocols[i] == wm_delete_window) {
+                    graceful = true;
+                    break;
+                }
+            }
+            if (false) { // TODO: should be if (graceful)
+                // std.debug.warn("Gracefully killing window {}\n", .{e.window});
+
+                // TODO: can't zero XEvent. For now, falling back to killing forcefully.
+                // /usr/lib/zig/std/mem.zig:359:13: error: Can't set a union__XEvent to zero.
+                //             @compileError("Can't set a " ++ @typeName(T) ++ " to zero.");
+                //             ^
+                // ./src/window_manager.zig:161:41: note: called from here
+                //                var msg = std.mem.zeroes(c.XEvent);
+
+                // var msg = std.mem.zeroes(c.XEvent);
+                // msg.xclient.type = c.ClientMessage;
+                // msg.xclient.message_type = @intCast(c_ulong, wm_protocols);
+                // msg.xclient.window = e.window;
+                // msg.xclient.format = 32;
+                // msg.xclient.data.l[0] = @intCast(c_long, wm_delete_window);
+            } else {
+                // std.debug.warn("Killing window {}\n", e.window);
+                _ = c.XKillClient(self.display, e.window);
+            }
+        }
+    }
+
+    fn onKeyRelease(self: *Self, e: c.XKeyEvent) void {}
+
     /// Reparent window to a frame (another window) so we can draw a border and decorations.
     fn frameWindow(self: *Self, w: c.Window) !void {
         const border_width = 3;
@@ -174,7 +225,16 @@ pub const WindowManager = struct {
             _ = c.XMapWindow(self.display, frame);
             // Save frame handle
             _ = try self.clients.put(w, frame);
-            // TODO: grab keys and buttons for w here
+            // Grab keys and buttons for w
+            const ret = c.XGrabKey(
+                self.display,
+                c.XKeysymToKeycode(self.display, c.XK_F4),
+                c.Mod1Mask,
+                w,
+                0,
+                c.GrabModeAsync,
+                c.GrabModeAsync,
+            );
         }
     }
 

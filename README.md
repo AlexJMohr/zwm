@@ -13,6 +13,8 @@ An Xlib (for now) window manager written in Zig.
 Use Xephyr to run a testing display server on `:1`. Check out `xephyr.sh` for that.
 Then run ZWM on `DISPLAY=:1`. and run some X programs.
 
+NOTE: if running under Xephyr, turn numlock off or XGrabKey won't grab.
+
 Example:
 
 ```
